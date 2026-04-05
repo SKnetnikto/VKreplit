@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "VK Bot Admin"
+version = "1.0.0"
+id = "artifacts/vk-bot-admin"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25514
+
+[services.development]
+run = "pnpm --filter @workspace/vk-bot-admin run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/vk-bot-admin", "run", "build" ]
+publicDir = "artifacts/vk-bot-admin/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25514"
+BASE_PATH = "/"

@@ -1,0 +1,389 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: VK Bot API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: vk
+    description: VK Callback API
+  - name: commands
+    description: Bot commands management
+  - name: settings
+    description: Bot settings
+  - name: stats
+    description: Bot statistics
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /vk/callback:
+    post:
+      operationId: vkCallback
+      tags: [vk]
+      summary: VK Callback API webhook
+      description: Receives events from VK
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VkCallbackEvent"
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /commands:
+    get:
+      operationId: listCommands
+      tags: [commands]
+      summary: List all commands
+      responses:
+        "200":
+          description: List of commands
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Command"
+    post:
+      operationId: createCommand
+      tags: [commands]
+      summary: Create a new command
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCommandBody"
+      responses:
+        "201":
+          description: Created command
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Command"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /commands/{id}:
+    get:
+      operationId: getCommand
+      tags: [commands]
+      summary: Get a command by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Command
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Command"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateCommand
+      tags: [commands]
+      summary: Update a command
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCommandBody"
+      responses:
+        "200":
+          description: Updated command
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Command"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteCommand
+      tags: [commands]
+      summary: Delete a command
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /bot-settings:
+    get:
+      operationId: getBotSettings
+      tags: [settings]
+      summary: Get bot settings
+      responses:
+        "200":
+          description: Bot settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotSettings"
+    put:
+      operationId: updateBotSettings
+      tags: [settings]
+      summary: Update bot settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BotSettings"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotSettings"
+
+  /bot-stats:
+    get:
+      operationId: getBotStats
+      tags: [stats]
+      summary: Get bot statistics
+      responses:
+        "200":
+          description: Statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStats"
+
+  /message-logs:
+    get:
+      operationId: listMessageLogs
+      tags: [stats]
+      summary: Get recent message logs
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Message logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MessageLog"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    VkCallbackEvent:
+      type: object
+      properties:
+        type:
+          type: string
+        object:
+          type: object
+        group_id:
+          type: integer
+        secret:
+          type: ["string", "null"]
+      required:
+        - type
+
+    Command:
+      type: object
+      properties:
+        id:
+          type: integer
+        trigger:
+          type: string
+        response:
+          type: string
+        description:
+          type: ["string", "null"]
+        isActive:
+          type: boolean
+        usageCount:
+          type: integer
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - trigger
+        - response
+        - isActive
+        - usageCount
+        - createdAt
+        - updatedAt
+
+    CreateCommandBody:
+      type: object
+      properties:
+        trigger:
+          type: string
+        response:
+          type: string
+        description:
+          type: ["string", "null"]
+        isActive:
+          type: boolean
+      required:
+        - trigger
+        - response
+
+    UpdateCommandBody:
+      type: object
+      properties:
+        trigger:
+          type: string
+        response:
+          type: string
+        description:
+          type: ["string", "null"]
+        isActive:
+          type: boolean
+
+    BotSettings:
+      type: object
+      properties:
+        communityName:
+          type: string
+        welcomeMessage:
+          type: string
+        unknownCommandMessage:
+          type: string
+        commandPrefix:
+          type: string
+        isActive:
+          type: boolean
+      required:
+        - communityName
+        - welcomeMessage
+        - unknownCommandMessage
+        - commandPrefix
+        - isActive
+
+    BotStats:
+      type: object
+      properties:
+        totalMessages:
+          type: integer
+        commandsUsed:
+          type: integer
+        activeCommands:
+          type: integer
+        totalCommands:
+          type: integer
+        topCommands:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommandUsage"
+      required:
+        - totalMessages
+        - commandsUsed
+        - activeCommands
+        - totalCommands
+        - topCommands
+
+    CommandUsage:
+      type: object
+      properties:
+        trigger:
+          type: string
+        usageCount:
+          type: integer
+      required:
+        - trigger
+        - usageCount
+
+    MessageLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        userId:
+          type: string
+        message:
+          type: string
+        commandTrigger:
+          type: ["string", "null"]
+        responseSent:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+      required:
+        - id
+        - userId
+        - message
+        - createdAt
