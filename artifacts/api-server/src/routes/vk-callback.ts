@@ -10,6 +10,7 @@ import { getOkUnreadNotifications, clearOkSession } from "../lib/ok-parser";
 const router: IRouter = Router();
 
 async function sendVkMessage(userId: number, message: string, groupToken: string): Promise<void> {
+  const startTime = Date.now();
   const randomId = Math.floor(Math.random() * 2147483647);
   const params = new URLSearchParams({
     user_id: String(userId),
@@ -19,13 +20,31 @@ async function sendVkMessage(userId: number, message: string, groupToken: string
     v: "5.131",
   });
 
-  const response = await fetch(`https://api.vk.com/method/messages.send?${params.toString()}`, {
-    method: "POST",
-  });
+  logger.debug({ userId, messageLength: message.length, randomId }, "Sending VK message...");
 
-  const data = await response.json() as { error?: { error_msg: string } };
-  if (data.error) {
-    logger.error({ error: data.error.error_msg }, "VK API error sending message");
+  try {
+    const response = await fetch(`https://api.vk.com/method/messages.send?${params.toString()}`, {
+      method: "POST",
+    });
+
+    const data = await response.json() as { error?: { error_msg: string; error_code?: number }; response?: number };
+
+    const elapsed = Date.now() - startTime;
+    logger.debug({ userId, elapsed, response: data.response }, "VK messages.send response");
+
+    if (data.error) {
+      logger.error(
+        { error: data.error.error_msg, errorCode: data.error.error_code, userId, elapsed },
+        "VK API error sending message"
+      );
+    }
+  } catch (err) {
+    const elapsed = Date.now() - startTime;
+    logger.error(
+      { err, userId, elapsed },
+      "Failed to send VK message"
+    );
+    throw err;
   }
 }
 
@@ -50,11 +69,27 @@ async function getVkAudioMessage(
     }
 
     if (audioUrl) {
-      const resp = await fetch(audioUrl, {
-        headers: { Authorization: `Bearer ${groupToken}` },
-      });
-      const arrBuf = await resp.arrayBuffer();
-      return Buffer.from(arrBuf);
+      logger.debug({ audioUrl, attachmentType: att.type }, "Downloading audio attachment...");
+      try {
+        const resp = await fetch(audioUrl, {
+          headers: { Authorization: `Bearer ${groupToken}` },
+        });
+
+        if (!resp.ok) {
+          logger.error(
+            { audioUrl, status: resp.status, statusText: resp.statusText },
+            "Failed to download audio attachment"
+          );
+          continue;
+        }
+
+        const arrBuf = await resp.arrayBuffer();
+        logger.debug({ size: arrBuf.byteLength }, "Audio downloaded");
+        return Buffer.from(arrBuf);
+      } catch (err) {
+        logger.error({ err, audioUrl }, "Error downloading audio attachment");
+        continue;
+      }
     }
   }
   return null;
@@ -195,6 +230,7 @@ async function handleOkNotifications(
 }
 
 router.post("/vk/callback", async (req, res): Promise<void> => {
+  const eventStartTime = Date.now();
   const event = req.body as {
     type: string;
     object?: {
@@ -213,22 +249,25 @@ router.post("/vk/callback", async (req, res): Promise<void> => {
     secret?: string;
   };
 
+  logger.debug({ eventType: event?.type, groupId: event?.group_id }, "VK callback received");
+
   const vkToken = process.env.VK_TOKEN;
   const vkConfirmCode = process.env.VK_CONFIRMATION_CODE;
   const vkSecret = process.env.VK_SECRET;
 
   if (vkSecret && event.secret !== vkSecret) {
-    req.log.warn("VK callback: invalid secret");
+    logger.warn({ receivedSecret: event.secret?.substring(0, 3) + "***" }, "VK callback: invalid secret");
     res.status(403).send("forbidden");
     return;
   }
 
   if (event.type === "confirmation") {
     if (!vkConfirmCode) {
-      req.log.error("VK_CONFIRMATION_CODE is not set");
+      logger.error("VK_CONFIRMATION_CODE is not set, cannot confirm");
       res.status(500).send("ok");
       return;
     }
+    logger.info({ code: vkConfirmCode }, "VK confirmation request — sending code");
     res.send(vkConfirmCode);
     return;
   }
@@ -236,22 +275,42 @@ router.post("/vk/callback", async (req, res): Promise<void> => {
   // Respond immediately so VK doesn't retry
   res.send("ok");
 
-  if (event.type !== "message_new") return;
+  if (event.type !== "message_new") {
+    logger.debug({ eventType: event.type }, "Ignoring non-message event");
+    return;
+  }
 
   const msg = event.object?.message;
-  if (!msg || !msg.from_id) return;
+  if (!msg || !msg.from_id) {
+    logger.warn("VK message missing from_id");
+    return;
+  }
 
   if (!vkToken) {
-    logger.warn("VK_TOKEN is not set, cannot respond");
+    logger.error("VK_TOKEN is not set, cannot respond to messages");
     return;
   }
 
   const settings = await getSettings();
-  if (settings.isActive !== "true") return;
+  if (settings.isActive !== "true") {
+    logger.info("Bot is inactive, skipping message handling");
+    return;
+  }
 
   const userId = msg.from_id;
   let text = msg.text ?? "";
   const attachments = msg.attachments ?? [];
+
+  logger.info(
+    {
+      userId,
+      textLength: text.length,
+      textPreview: text.substring(0, 100),
+      attachmentsCount: attachments.length,
+      attachmentTypes: attachments.map((a) => a.type),
+    },
+    "Processing new VK message"
+  );
 
   // Handle voice message: transcribe first
   if (!text && attachments.length > 0) {
@@ -260,25 +319,37 @@ router.post("/vk/callback", async (req, res): Promise<void> => {
     );
 
     if (hasVoice) {
+      logger.info({ userId }, "Voice message detected, starting transcription...");
       const audioBuffer = await getVkAudioMessage(attachments, vkToken);
       if (audioBuffer) {
         try {
           text = await transcribeAudio(audioBuffer, "audio/ogg");
-          logger.info({ text, userId }, "Voice message transcribed");
+          logger.info({ text, userId, audioSize: audioBuffer.byteLength }, "Voice message transcribed successfully");
           // Send transcription back so user knows what was understood
           await sendVkMessage(userId, `Голосовое: "${text}"`, vkToken);
         } catch (err) {
-          logger.error({ err }, "Voice transcription failed");
+          logger.error({ err, userId }, "Voice transcription failed");
           await sendVkMessage(userId, "Не удалось расшифровать голосовое сообщение. Попробуй написать текстом.", vkToken);
           return;
         }
+      } else {
+        logger.warn({ userId }, "Failed to download voice audio from attachments");
       }
     }
   }
 
-  if (!text) return;
+  if (!text) {
+    logger.debug({ userId }, "No text to process, skipping");
+    return;
+  }
 
   const { responseSent, commandTrigger } = await handleTextMessage(text, userId, vkToken, settings);
+
+  const elapsed = Date.now() - eventStartTime;
+  logger.info(
+    { userId, commandTrigger, responseLength: responseSent.length, elapsed },
+    "Message handled successfully"
+  );
 
   await db.insert(messageLogsTable).values({
     userId: String(userId),

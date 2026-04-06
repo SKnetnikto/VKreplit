@@ -22,21 +22,38 @@ async function screenshot(page: Page, name: string): Promise<void> {
 }
 
 async function launchBrowser(): Promise<Browser> {
-  const executablePath = await chromium.executablePath();
-  return puppeteer.launch({
-    args: [
-      ...chromium.args,
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-infobars",
-      "--window-size=1280,800",
-      "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    ],
-    defaultViewport: { width: 1280, height: 800 },
-    executablePath,
-    headless: true,
-  });
+  logger.info("Launching Chromium for OK.ru...");
+  const startTime = Date.now();
+  try {
+    const executablePath = await chromium.executablePath();
+    logger.debug({ executablePath }, "Chromium executable path resolved");
+
+    const browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        "--window-size=1280,800",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      ],
+      defaultViewport: { width: 1280, height: 800 },
+      executablePath,
+      headless: true,
+    });
+
+    const elapsed = Date.now() - startTime;
+    logger.info({ elapsed, args: chromium.args.length }, "Browser launched successfully");
+    return browser;
+  } catch (err) {
+    const elapsed = Date.now() - startTime;
+    logger.error(
+      { err, elapsed },
+      "Failed to launch browser"
+    );
+    throw new Error(`Не удалось запустить браузер: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 async function saveCookies(page: Page): Promise<void> {
@@ -92,6 +109,7 @@ async function login(page: Page): Promise<void> {
   }
 
   logger.info("Logging in to OK.ru...");
+  const loginStartTime = Date.now();
 
   // Try multiple login pages OK.ru supports
   const loginUrls = [
@@ -100,7 +118,9 @@ async function login(page: Page): Promise<void> {
   ];
 
   for (const loginUrl of loginUrls) {
+    const urlStartTime = Date.now();
     try {
+      logger.debug({ loginUrl }, "Trying login URL...");
       await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
       await randomDelay(2000, 4000);
       await screenshot(page, "login_page");
@@ -114,7 +134,7 @@ async function login(page: Page): Promise<void> {
         (await page.$('input.inputW:nth-of-type(1)'));
 
       if (!emailInput) {
-        logger.warn("Could not find email/phone input on OK.ru login page");
+        logger.warn({ loginUrl, elapsed: Date.now() - urlStartTime }, "Could not find email/phone input on OK.ru login page");
         continue;
       }
 
@@ -129,7 +149,7 @@ async function login(page: Page): Promise<void> {
         (await page.$('input.inputW:nth-of-type(2)'));
 
       if (!passwordInput) {
-        logger.warn("Could not find password input on OK.ru login page");
+        logger.warn({ loginUrl, elapsed: Date.now() - urlStartTime }, "Could not find password input on OK.ru login page");
         continue;
       }
 
@@ -160,19 +180,23 @@ async function login(page: Page): Promise<void> {
 
       const url = page.url();
       if (url.includes("st.error") || url.includes("authError")) {
+        logger.error({ url }, "OK.ru auth error detected in URL");
         throw new Error("Ошибка авторизации на OK.ru. Проверь логин и пароль.");
       }
 
       // Check if we actually got past the login page
       if (url.includes("login") || url.includes("sign_in") || url.includes("dk?st.layer")) {
-        logger.warn("Still on login page after submit, trying next URL");
+        logger.warn({ url, elapsed: Date.now() - urlStartTime }, "Still on login page after submit, trying next URL");
         continue;
       }
 
-      logger.info({ url }, "Logged in to OK.ru successfully");
+      logger.info({ url, elapsed: Date.now() - loginStartTime }, "Logged in to OK.ru successfully");
       return;
     } catch (err) {
-      logger.warn({ err }, "Login attempt failed for URL: " + loginUrl);
+      logger.warn(
+        { err, loginUrl, elapsed: Date.now() - urlStartTime },
+        "Login attempt failed for URL: " + loginUrl
+      );
     }
   }
 
@@ -275,6 +299,7 @@ async function countNotificationsFromPage(page: Page): Promise<number> {
 
 export async function getOkUnreadNotifications(): Promise<OkNotificationData> {
   let browser: Browser | null = null;
+  const startTime = Date.now();
   try {
     browser = await launchBrowser();
     const page = await browser.newPage();
@@ -295,6 +320,7 @@ export async function getOkUnreadNotifications(): Promise<OkNotificationData> {
     await page.setExtraHTTPHeaders({ "Accept-Language": "ru-RU,ru;q=0.9" });
 
     // Try to restore session
+    logger.info("Restoring OK.ru session...");
     const cookiesLoaded = await loadCookies(page);
     if (cookiesLoaded) {
       const loggedIn = await isLoggedIn(page);
@@ -314,6 +340,7 @@ export async function getOkUnreadNotifications(): Promise<OkNotificationData> {
     // Navigate to notifications
     await randomDelay(1500, 3000);
     logger.info("Navigating to notifications page...");
+    const navStartTime = Date.now();
     await page.goto("https://ok.ru/notifications", {
       waitUntil: "domcontentloaded",
       timeout: 30000,
@@ -321,21 +348,36 @@ export async function getOkUnreadNotifications(): Promise<OkNotificationData> {
     await randomDelay(3000, 5000);
     await screenshot(page, "notifications_page");
 
+    logger.debug({ navElapsed: Date.now() - navStartTime }, "Notifications page loaded");
+
     const unreadCount = await countNotificationsFromPage();
     const details =
       unreadCount === 0
         ? "Непрочитанных уведомлений нет"
         : `Непрочитанных уведомлений: ${unreadCount}`;
 
-    logger.info({ unreadCount, details }, "OK notifications check complete");
+    const totalElapsed = Date.now() - startTime;
+    logger.info(
+      { unreadCount, details, totalElapsed },
+      "OK notifications check complete"
+    );
     return { unreadCount, details };
   } catch (err) {
+    const totalElapsed = Date.now() - startTime;
     const msg = err instanceof Error ? err.message : "Неизвестная ошибка";
-    logger.error({ err }, "Failed to get OK notifications");
+    logger.error(
+      { err, totalElapsed, stack: err instanceof Error ? err.stack : undefined },
+      "Failed to get OK notifications"
+    );
     throw new Error(`Не удалось получить уведомления: ${msg}`);
   } finally {
     if (browser) {
-      await browser.close();
+      try {
+        await browser.close();
+        logger.debug("Browser closed");
+      } catch (err) {
+        logger.warn({ err }, "Error closing browser");
+      }
     }
   }
 }
